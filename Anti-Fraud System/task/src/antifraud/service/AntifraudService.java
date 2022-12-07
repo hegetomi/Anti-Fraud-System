@@ -35,31 +35,20 @@ public class AntifraudService {
     private StolenCardRepository stolenCardRepository;
     @Autowired
     private TransactionRepository transactionRepository;
-
     @Autowired
     private LimitRepository limitRepository;
 
-    //private Long allowedLimit = 200l;
-    //private Long manualLimit = 1500l;
-
-    private Logger LOGGER = LoggerFactory.getLogger(AntifraudService.class);
+    private final Logger LOGGER = LoggerFactory.getLogger(AntifraudService.class);
 
     public TransactionResultDto checkTransaction(TransactionDto transactionDto) throws BadRequestParamException {
+        checkCardAndIpValidity(transactionDto);
+
         Long amount = transactionDto.getAmount();
         Limit limit = getLimit();
-        LOGGER.warn("LIMITID " + limit.getId());
-
 
         TransactionResultDto resultDto = new TransactionResultDto();
         List<String> reasons = new ArrayList<>();
-        if (amount == null || amount <= 0 || transactionDto.getNumber() == null || transactionDto.getIp() == null) {
-            throw new BadRequestParamException();
-        }
-        boolean isValidIp = checkIpValidity(transactionDto.getIp());
-        boolean isValidCard = checkCardValidity(transactionDto.getNumber());
-        if (!isValidCard || !isValidIp) {
-            throw new BadRequestParamException();
-        }
+
         Optional<StolenCard> stolenCard = stolenCardRepository.findByNumber(transactionDto.getNumber());
         Optional<SuspiciousIp> susIp = suspiciousIpRepository.findByIp(transactionDto.getIp());
         String region = transactionDto.getRegion();
@@ -88,29 +77,25 @@ public class AntifraudService {
         }
 
         if (!reasons.isEmpty()) {
-            resultDto.setResult("PROHIBITED");
+            resultDto.setResult(State.PROHIBITED.name());
         }
-
-        LOGGER.warn("AMOUNT: " + amount);
-        LOGGER.warn("ALLOWED_AMOUNT: " + limit.getAllowedLimit());
-        LOGGER.warn("MANUAL_AMOUNT: " + limit.getManualLimit());
 
         if (null == resultDto.getResult()) {
             if (amount > limit.getAllowedLimit() && amount <= limit.getManualLimit()) {
                 reasons.add("amount");
-                resultDto.setResult("MANUAL_PROCESSING");
+                resultDto.setResult(State.MANUAL_PROCESSING.name());
             }
             if (listOfTransactionsRegion == 2) {
                 reasons.add("region-correlation");
-                resultDto.setResult("MANUAL_PROCESSING");
+                resultDto.setResult(State.MANUAL_PROCESSING.name());
             }
             if (listOfTransactionIp == 2) {
                 reasons.add("ip-correlation");
-                resultDto.setResult("MANUAL_PROCESSING");
+                resultDto.setResult(State.MANUAL_PROCESSING.name());
             }
         }
         if (null == resultDto.getResult()) {
-            resultDto.setResult("ALLOWED");
+            resultDto.setResult(State.ALLOWED.name());
         }
 
         Transaction transaction = new Transaction();
@@ -128,10 +113,17 @@ public class AntifraudService {
 
     }
 
+    private void checkCardAndIpValidity(TransactionDto transactionDto) throws BadRequestParamException {
+        boolean isValidIp = checkIpValidity(transactionDto.getIp());
+        boolean isValidCard = checkCardAndIpValidity(transactionDto.getNumber());
+        if (!isValidCard || !isValidIp) {
+            throw new BadRequestParamException();
+        }
+    }
+
     private Limit getLimit() {
         Optional<Limit> existingLimit = limitRepository.findById(9999L);
-        if(existingLimit.isEmpty()) {
-            LOGGER.warn("INITLIMIT CALLED");
+        if (existingLimit.isEmpty()) {
             Limit limit = new Limit();
             limit.setId(9999L);
             limit.setAllowedLimit(200L);
@@ -215,15 +207,11 @@ public class AntifraudService {
 
     @Transactional
     public StolenCard saveCard(StolenCardDto dto) throws BadRequestParamException, EntityExistsException {
-        boolean isValidCard = checkCardValidity(dto.getNumber());
-        LOGGER.warn(dto.getNumber() + "");
-        LOGGER.warn(isValidCard + "");
-
+        boolean isValidCard = checkCardAndIpValidity(dto.getNumber());
         if (!isValidCard) {
             throw new BadRequestParamException();
         }
         Optional<StolenCard> ipOptional = stolenCardRepository.findByNumber(dto.getNumber());
-        LOGGER.warn(ipOptional.isPresent() + "");
         if (ipOptional.isPresent()) {
             throw new EntityExistsException();
         }
@@ -233,7 +221,7 @@ public class AntifraudService {
         return stolenCardRepository.save(stolenCard);
     }
 
-    private boolean checkCardValidity(String number) {
+    private boolean checkCardAndIpValidity(String number) {
         if (number.matches("[a-zA-Z]") || number.length() != 16) {
             return false;
         }
@@ -241,14 +229,14 @@ public class AntifraudService {
         int checkSum = Integer.parseInt(String.valueOf(numAsString.charAt(15)));
         numAsString = numAsString.substring(0, 15);
 
-        int sumOfNums = luhnAlgorithm(numAsString, 0);
+        int sumOfNums = luhnAlgorithm(numAsString);
         return sumOfNums % 10 == 0 && checkSum == 0 || 10 - (sumOfNums % 10) == checkSum;
 
 
     }
 
-    private int luhnAlgorithm(String numAsString, int sumOfNums) {
-        LOGGER.warn("numasstring: " + numAsString);
+    private int luhnAlgorithm(String numAsString) {
+        int sumOfNums = 0;
         String[] numsArray = numAsString.split("");
         for (int i = 0; i < numsArray.length; i++) {
             int currentAsNumber = Integer.parseInt((numsArray[i]));
@@ -262,13 +250,12 @@ public class AntifraudService {
             currentAsNumber = Integer.parseInt((numsArray[i]));
             sumOfNums = sumOfNums + currentAsNumber;
         }
-        LOGGER.warn("sumofnums: " + sumOfNums);
         return sumOfNums;
     }
 
     @Transactional
     public void deleteCard(String number) throws BadRequestParamException, NotFoundException {
-        boolean isValidIp = checkCardValidity(number);
+        boolean isValidIp = checkCardAndIpValidity(number);
         if (!isValidIp) {
             throw new BadRequestParamException();
         }
@@ -281,10 +268,6 @@ public class AntifraudService {
 
     public List<StolenCard> getAllCards() {
         return stolenCardRepository.findAll();
-    }
-
-    public Optional<Transaction> getTransactionById(Long id) {
-        return transactionRepository.findById(id);
     }
 
     @Transactional
@@ -311,46 +294,30 @@ public class AntifraudService {
 
     }
 
-    @Transactional
     protected void modifyLimits(State state, State feedback, Long amount) {
         Limit limit = getLimit();
-        LOGGER.warn("LIMITID " + limit.getId());
-        LOGGER.warn("MODIFYING LIMITS");
-        LOGGER.warn("TRIGGER: " + amount);
-        LOGGER.warn("OLDALLOWED: " +limit.getAllowedLimit());
-        LOGGER.warn("OLDMANUAL: " + limit.getManualLimit());
         if (state.equals(State.ALLOWED) && feedback.equals(State.PROHIBITED)) {
-            limit.setAllowedLimit(lowerAllowed(limit.getAllowedLimit(),amount));
-            limit.setManualLimit(lowerManual(limit.getManualLimit(),amount));
+            limit.setAllowedLimit(lowerLimit(limit.getAllowedLimit(), amount));
+            limit.setManualLimit(lowerLimit(limit.getManualLimit(), amount));
         } else if (state.equals(State.ALLOWED) && feedback.equals(State.MANUAL_PROCESSING)) {
-            limit.setAllowedLimit(lowerAllowed(limit.getAllowedLimit(),amount));
+            limit.setAllowedLimit(lowerLimit(limit.getAllowedLimit(), amount));
         } else if (state.equals(State.MANUAL_PROCESSING) && feedback.equals(State.ALLOWED)) {
-            limit.setAllowedLimit(increaseAllowed(limit.getAllowedLimit(),amount));
+            limit.setAllowedLimit(increaseLimit(limit.getAllowedLimit(), amount));
         } else if (state.equals(State.MANUAL_PROCESSING) && feedback.equals(State.PROHIBITED)) {
-            limit.setManualLimit(lowerManual(limit.getManualLimit(),amount));
+            limit.setManualLimit(lowerLimit(limit.getManualLimit(), amount));
         } else if (state.equals(State.PROHIBITED) && feedback.equals(State.ALLOWED)) {
-            limit.setAllowedLimit(increaseAllowed(limit.getAllowedLimit(),amount));
-            limit.setManualLimit(increaseManual(limit.getManualLimit(),amount));
+            limit.setAllowedLimit(increaseLimit(limit.getAllowedLimit(), amount));
+            limit.setManualLimit(increaseLimit(limit.getManualLimit(), amount));
         } else if (state.equals(State.PROHIBITED) && feedback.equals(State.MANUAL_PROCESSING)) {
-            limit.setManualLimit(increaseManual(limit.getManualLimit(),amount));
+            limit.setManualLimit(increaseLimit(limit.getManualLimit(), amount));
         }
-        LOGGER.warn("NEWALLOWED: " + limit.getAllowedLimit());
-        LOGGER.warn("NEWMANUAL: " + limit.getManualLimit());
     }
 
-    private Long lowerAllowed(Long allowedLimit, Long amount) {
+    private Long lowerLimit(Long allowedLimit, Long amount) {
         return (long) Math.ceil(0.8 * allowedLimit - 0.2 * amount);
     }
 
-    private Long lowerManual(Long allowedLimit, Long amount) {
-        return (long) Math.ceil(0.8 * allowedLimit - 0.2 * amount);
-    }
-
-    private Long increaseAllowed(Long allowedLimit, Long amount) {
-       return (long) Math.ceil(0.8 * allowedLimit + 0.2 * amount);
-    }
-
-    private Long increaseManual(Long allowedLimit, Long amount) {
+    private Long increaseLimit(Long allowedLimit, Long amount) {
         return (long) Math.ceil(0.8 * allowedLimit + 0.2 * amount);
     }
 
@@ -359,9 +326,8 @@ public class AntifraudService {
     }
 
 
-
     public List<Transaction> findTransactionsForCard(String number) throws BadRequestParamException {
-        if (!checkCardValidity(number)) {
+        if (!checkCardAndIpValidity(number)) {
             throw new BadRequestParamException();
         }
         return transactionRepository.findByNumber(number);

@@ -3,14 +3,16 @@ package antifraud.dto;
 import org.springframework.format.annotation.DateTimeFormat;
 
 import javax.validation.Valid;
+import javax.validation.constraints.Min;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotEmpty;
 import javax.validation.constraints.NotNull;
 import java.time.LocalDateTime;
-import java.util.Date;
 
 public class TransactionDto {
 
+    @NotNull
+    @Min(1)
     private Long amount;
     @NotNull
     @NotEmpty
